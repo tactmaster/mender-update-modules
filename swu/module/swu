@@ -5,18 +5,181 @@ set -e
 STATE="$1"
 FILES="$2"
 
-case "$STATE" in
+# Default partition configuration (can be overridden by config file)
+ROOTFS_PART_A="${ROOTFS_PART_A:-/dev/vda2}"
+ROOTFS_PART_B="${ROOTFS_PART_B:-/dev/vda3}"
 
-    NeedsArtifactReboot)
-		REBOOT=$(jq -r ".reboot" "$FILES"/header/meta-data)
-		if [ "$REBOOT" = "true" ]; then
-			echo "Automatic";
+# State files
+STATE_DIR="/media/mender/"
+EXPECTED_PARTITION_FILE="$STATE_DIR/expected_partition"
+
+# Create state directory if it doesn't exist
+mkdir -p "$STATE_DIR"
+
+
+get_active_partition() {
+	# Get the root filesystem device from mount info
+	root_device=$(mount | grep ' on / type' | awk '{print $1}')
+	
+	if [ -n "$root_device" ]; then
+		# Check if the root device matches either partition A or B
+		if [ "$root_device" = "$ROOTFS_PART_A" ]; then
+			echo "$ROOTFS_PART_A"
+		elif [ "$root_device" = "$ROOTFS_PART_B" ]; then
+			echo "$ROOTFS_PART_B"
 		else
-        	echo "No";
+			# Default to partition A if uncertain
+			echo "$ROOTFS_PART_A"
 		fi
+	else
+		# Fallback to partition A
+		echo "$ROOTFS_PART_A"
+	fi
+}
+
+
+
+get_swupdate_selection() {
+    active_part=$(get_active_partition)
+    if [ "$active_part" = "$ROOTFS_PART_A" ]; then
+        echo "stable,copy2"  # A is active, install to B (copy2)
+    else
+        echo "stable,copy1"  # B is active, install to A (copy1)
+    fi
+}
+
+get_passive_partition() {
+    active_part=$(get_active_partition)
+    if [ "$active_part" = "$ROOTFS_PART_A" ]; then
+        echo "$ROOTFS_PART_B"
+    else
+        echo "$ROOTFS_PART_A"
+    fi
+}
+
+
+
+case "$STATE" in
+    Download)
+        # Verify SWUpdate is available
+        if ! command -v swupdate >/dev/null 2>&1; then
+            echo "ERROR: swupdate command not found."
+            exit 1
+        fi
+        
+        # Verify we have access to partition information
+        if [ ! -b "$ROOTFS_PART_A" ] || [ ! -b "$ROOTFS_PART_B" ]; then
+            echo "ERROR: Partition devices not found."
+            exit 1
+        fi
+        
         ;;
+
+    PerformsFullUpdate)
+        echo "Yes"
+        ;;
+    NeedsArtifactReboot)
+  		echo "Yes"
+        ;;
+    # NeedsArtifactReboot)
+    #     REBOOT=$(jq -r ".reboot // true" "$FILES"/header/meta-data 2>/dev/null || echo "true")
+    #     if [ "$REBOOT" = "true" ]; then
+    #         echo "Automatic"
+    #     else
+    #         echo "No"
+    #     fi
+    #     ;;
+
+    SupportsRollback)
+        echo "No"
+        ;;
+
     ArtifactInstall)
-        swupdate -i "$FILES"/files/*.swu
+        echo "Installing SWU update..."
+        
+        # Find the SWU file
+        swu_file=$(find "$FILES/files" -name "*.swu" | head -1)
+        if [ -z "$swu_file" ]; then
+            echo "ERROR: No .swu file found in artifact"
+            exit 1
+        fi
+        
+        # Get current active partition and target passive partition
+        active_part=$(get_active_partition)
+        
+        echo "Current active partition: $active_part"
+        echo "Installing to passive partition: $passive_part"
+        
+        # Store the expected partition after reboot (the passive partition we're installing to)
+        echo "$passive_part" > "$EXPECTED_PARTITION_FILE"
+        echo "Expected partition after reboot: $passive_part (saved to $EXPECTED_PARTITION_FILE)"
+
+        # Get SWUpdate selection based on active partition
+        swupdate_selection=$(get_swupdate_selection)
+        echo "Using SWUpdate selection: $swupdate_selection"
+        
+        # Run SWUpdate with A/B configuration
+        # Use -v for verbose output and -e to select the target
+        if ! swupdate -v -i "$swu_file" -e "$swupdate_selection" ; then
+            echo "ERROR: SWUpdate installation failed"
+            echo "failed" > "$UPDATE_STATUS_FILE"
+            exit 1
+        fi
+        
+        echo "installed" > "$UPDATE_STATUS_FILE"
+        echo "SWU update installed successfully. Reboot required."
+        ;;
+
+    ArtifactVerifyReboot)
+        echo "Verifying reboot success..."
+        
+        # Check if we have the expected partition file
+        if [ ! -f "$EXPECTED_PARTITION_FILE" ]; then
+            echo "ERROR: Expected partition file not found at $EXPECTED_PARTITION_FILE"
+            exit 1
+        fi
+        
+        # Get the expected partition and current active partition
+        expected_part=$(cat "$EXPECTED_PARTITION_FILE")
+        current_part=$(get_active_partition)
+        
+        echo "Expected partition: $expected_part"
+        echo "Current active partition: $current_part"
+        
+        # Verify we're running from the expected partition
+        if [ "$current_part" != "$expected_part" ]; then
+            echo "ERROR: Reboot verification failed!"
+            echo "Expected to boot from: $expected_part"
+            echo "Actually booted from: $current_part"
+            exit 1
+        fi
+        
+
+        echo "Reboot verification successful - running from correct partition: $current_part"
+        ;;
+
+    ArtifactCommit)
+        echo "Committing SWU update..."
+        
+        # Clean up state files
+        rm -f "$EXPECTED_PARTITION_FILE"
+        echo "committed" > "$UPDATE_STATUS_FILE"
+        echo "SWU update committed successfully."
+        ;;
+
+    ArtifactRollback)
+        echo "Rolling back SWU update..."
+        
+        # Clean up state files
+        rm -f "$EXPECTED_PARTITION_FILE"
+        echo "rollback" > "$UPDATE_STATUS_FILE"
+        echo "SWU update rolled back successfully."
+        ;;
+
+    *)
+        echo "Unknown state: $STATE"
+        exit 1
         ;;
 esac
+
 exit 0
