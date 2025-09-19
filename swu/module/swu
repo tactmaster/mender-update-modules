@@ -60,20 +60,6 @@ get_passive_partition() {
 
 
 case "$STATE" in
-    Download)
-        # Verify SWUpdate is available
-        if ! command -v swupdate >/dev/null 2>&1; then
-            echo "ERROR: swupdate command not found."
-            exit 1
-        fi
-        
-        # Verify we have access to partition information
-        if [ ! -b "$ROOTFS_PART_A" ] || [ ! -b "$ROOTFS_PART_B" ]; then
-            echo "ERROR: Partition devices not found."
-            exit 1
-        fi
-        
-        ;;
 
     PerformsFullUpdate)
         echo "Yes"
@@ -81,14 +67,15 @@ case "$STATE" in
     NeedsArtifactReboot)
   		echo "Yes"
         ;;
-    # NeedsArtifactReboot)
-    #     REBOOT=$(jq -r ".reboot // true" "$FILES"/header/meta-data 2>/dev/null || echo "true")
-    #     if [ "$REBOOT" = "true" ]; then
-    #         echo "Automatic"
-    #     else
-    #         echo "No"
-    #     fi
-    #     ;;
+
+    NeedsArtifactReboot)
+         REBOOT=$(jq -r ".reboot // true" "$FILES"/header/meta-data 2>/dev/null || echo "true")
+         if [ "$REBOOT" = "true" ]; then
+             echo "Automatic"
+         else
+             echo "No"
+         fi
+         ;;
 
     SupportsRollback)
         echo "No"
@@ -98,7 +85,7 @@ case "$STATE" in
         echo "Installing SWU update..."
         
         # Find the SWU file
-        swu_file=$(find "$FILES/files" -name "*.swu" | head -1)
+        swu_file=$(find "$FILES/files" -name "*.swu" | head -n 1)
         if [ -z "$swu_file" ]; then
             echo "ERROR: No .swu file found in artifact"
             exit 1
@@ -176,10 +163,14 @@ case "$STATE" in
         echo "SWU update rolled back successfully."
         ;;
 
-    *)
-        echo "Unknown state: $STATE"
-        exit 1
+    Cleanup)
+        echo "Cleaning up SWU update module..."
+        
+        # Remove all temporary state files
+        rm -f "$EXPECTED_PARTITION_FILE"
         ;;
+
+
 esac
 
 exit 0
