@@ -12,7 +12,7 @@ ROOTFS_PART_B="${ROOTFS_PART_B:-/dev/vda3}"
 # State files
 STATE_DIR="/media/mender/"
 EXPECTED_PARTITION_FILE="$STATE_DIR/expected_partition"
-
+UPDATE_STATUS_FILE="$STATE_DIR/update_status"
 # Create state directory if it doesn't exist
 mkdir -p "$STATE_DIR"
 
