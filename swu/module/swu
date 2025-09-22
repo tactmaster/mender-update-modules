@@ -93,7 +93,7 @@ case "$STATE" in
         
         # Get current active partition and target passive partition
         active_part=$(get_active_partition)
-        
+        passive_part=$(get_passive_partition)
         echo "Current active partition: $active_part"
         echo "Installing to passive partition: $passive_part"
         
